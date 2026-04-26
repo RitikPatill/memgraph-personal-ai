@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Build
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Database (never commit the local knowledge graph)
+*.sqlite
+*.db
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# pyvis output files
+memgraph/*.html
+
+# IDE
+.vscode/
+.idea/
