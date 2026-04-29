@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 
 import networkx as nx
+import numpy as np
 
 from .extractor import Triple
 
@@ -26,6 +27,13 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 """
 
+_CREATE_EMBEDDINGS = """
+CREATE TABLE IF NOT EXISTS node_embeddings (
+    node_id   TEXT PRIMARY KEY REFERENCES nodes(id),
+    embedding BLOB NOT NULL
+);
+"""
+
 
 def _node_id(label: str) -> str:
     return label.strip().lower().replace(" ", "_")
@@ -40,7 +48,12 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute(_CREATE_NODES)
+    try:
+        conn.execute("ALTER TABLE nodes ADD COLUMN embedding BLOB")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute(_CREATE_EDGES)
+    conn.execute(_CREATE_EMBEDDINGS)
     conn.commit()
     return conn
 
@@ -68,6 +81,21 @@ def upsert_triple(conn: sqlite3.Connection, triple: Triple) -> None:
     conn.commit()
 
 
+def store_embedding(conn: sqlite3.Connection, node_id: str, vector: np.ndarray) -> None:
+    """Serialise vector as float32 bytes and store in nodes.embedding."""
+    blob = vector.astype(np.float32).tobytes()
+    conn.execute("UPDATE nodes SET embedding = ? WHERE id = ?", (blob, node_id))
+    conn.commit()
+
+
+def load_embeddings(conn: sqlite3.Connection) -> dict[str, np.ndarray]:
+    """Return {node_id: vector} for all nodes with non-null embeddings."""
+    rows = conn.execute(
+        "SELECT id, embedding FROM nodes WHERE embedding IS NOT NULL"
+    ).fetchall()
+    return {row[0]: np.frombuffer(row[1], dtype=np.float32) for row in rows}
+
+
 def load_graph(conn: sqlite3.Connection) -> nx.MultiDiGraph:
     """Read all rows from nodes + edges tables, return populated MultiDiGraph."""
     G = nx.MultiDiGraph()
@@ -88,3 +116,18 @@ def load_graph(conn: sqlite3.Connection) -> nx.MultiDiGraph:
         )
 
     return G
+
+
+def upsert_node_embedding(conn: sqlite3.Connection, node_id: str, embedding_bytes: bytes) -> None:
+    """INSERT OR REPLACE a serialized numpy embedding for node_id."""
+    conn.execute(
+        "INSERT OR REPLACE INTO node_embeddings (node_id, embedding) VALUES (?, ?)",
+        (node_id, embedding_bytes),
+    )
+    conn.commit()
+
+
+def load_all_embeddings(conn: sqlite3.Connection) -> dict[str, bytes]:
+    """Return {node_id: embedding_bytes} for all stored embeddings."""
+    rows = conn.execute("SELECT node_id, embedding FROM node_embeddings").fetchall()
+    return {row[0]: bytes(row[1]) for row in rows}

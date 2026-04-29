@@ -19,5 +19,9 @@ httpx==0.28.1
 # Utilities
 python-dotenv==1.0.1
 
+# Retrieval / embeddings
+sentence-transformers==3.0.1
+numpy==1.26.4
+
 # Testing
 pytest==8.3.4
