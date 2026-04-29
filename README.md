@@ -40,7 +40,7 @@ A local personal AI assistant that progressively builds a typed knowledge graph 
 - **Reset button**: calls `POST /reset`, clears local chat history, and rerenders.
 - **`memgraph.ui.build_pyvis_html(nodes, edges)`**: pure helper that converts `/graph` JSON lists to a self-contained dark-themed pyvis HTML string. Exported alongside `ENTITY_TYPE_COLORS`.
 - **Unit tests** (`tests/test_ui.py`): 4 tests covering empty graph, person-node color, edge predicate presence, and all known entity-type color keys — no Streamlit runtime or live server required.
-- **Note**: if port 8000 is already in use by another process, the UI connects to it as-is. The graph panel loads vis.js from CDN, so an internet connection is required for rendering.
+- **Note**: if port 8000 is already in use by another process, the UI connects to it as-is; set `MEMGRAPH_API_URL` to override the backend URL. The graph panel loads vis.js from CDN — an internet connection is required for rendering.
 
 ## Architecture
 
@@ -92,7 +92,7 @@ memgraph-personal-ai/
 │   │   ├── __init__.py
 │   │   └── main.py        # FastAPI app: lifespan, /chat, /graph, /reset
 │   └── ui/                # Streamlit UI + pyvis visualization
-│       └── __init__.py    # ENTITY_COLORS + build_pyvis_html
+│       └── __init__.py    # ENTITY_TYPE_COLORS + build_pyvis_html
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py        # global sentence_transformers stub + per-test module isolation fixture
