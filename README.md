@@ -25,12 +25,22 @@ A local personal AI assistant that progressively builds a typed knowledge graph 
 - **Unit tests** (`tests/test_retrieval.py`): 22 tests covering BFS seed finding, depth-limiting, max-nodes capping, embedding round-trips, index idempotency, cosine fallback, and the unified interface. All sentence-transformer calls are mocked — no download required.
 
 ### M4 — FastAPI Backend (complete)
-- **`POST /chat`**: extracts triples from the user message, upserts them to SQLite, reloads the graph, retrieves context via `Retriever.retrieve`, calls Anthropic `claude-haiku-4-5` for a response, and maintains an in-memory conversation history buffer (capped at 20 entries).
+- **`POST /chat`**: extracts triples from the user message, upserts them to SQLite, reloads the graph and re-indexes embeddings (only when new triples arrive), retrieves context via `Retriever.retrieve`, calls Anthropic `claude-haiku-4-5` for a response, and maintains an in-memory conversation history buffer (capped at 20 entries). Response body: `{"response": str, "triples_extracted": int}`.
 - **`GET /graph`**: serializes the live NetworkX graph to `{"nodes": [...], "edges": [...]}` JSON for visualization.
 - **`POST /reset`**: truncates all three SQLite tables in FK-safe order (`node_embeddings → edges → nodes`), reinitializes an empty graph, and clears conversation history.
 - **Shared runtime state** lives in a module-level `_state` dict, wired up via FastAPI's `lifespan` context manager. `MEMGRAPH_DB_PATH` env var overrides the default `memgraph.db` path (used by tests with `:memory:`).
 - **Unit tests** (`tests/test_api.py`): 6 tests covering response shape, graph updates from extracted triples, empty-graph response, reset clearing graph/history, and history trimming. No API key or model download required — Anthropic client and SentenceTransformer are fully mocked.
 - Run the server: `uvicorn memgraph.api.main:app --reload`
+
+### M5 — Streamlit UI (complete)
+- **Single entry point**: `streamlit run ui.py` launches the FastAPI backend as a background subprocess (port 8000) then opens the Streamlit interface.
+- **Two-column layout**: chat panel on the left, live pyvis knowledge-graph visualization on the right.
+- **Chat panel**: persistent conversation history rendered with `st.chat_message`; `st.chat_input` anchored at the bottom; responses fetched from `POST /chat`.
+- **Graph panel**: fetches `GET /graph` after every interaction and re-renders a pyvis `Network` as an embedded HTML component. Nodes are color-coded by entity type (person=green, place=blue, preference=orange, fact=purple, event=red, entity/other=grey). Empty-graph state shows a friendly info message.
+- **Reset button**: calls `POST /reset`, clears local chat history, and rerenders.
+- **`memgraph.ui.build_pyvis_html(nodes, edges)`**: pure helper that converts `/graph` JSON lists to a self-contained dark-themed pyvis HTML string. Exported alongside `ENTITY_TYPE_COLORS`.
+- **Unit tests** (`tests/test_ui.py`): 4 tests covering empty graph, person-node color, edge predicate presence, and all known entity-type color keys — no Streamlit runtime or live server required.
+- **Note**: if port 8000 is already in use by another process, the UI connects to it as-is. The graph panel loads vis.js from CDN, so an internet connection is required for rendering.
 
 ## Architecture
 
@@ -40,7 +50,8 @@ User message
 User query
   └─► Graph traversal + embedding cosine search
         └─► context string → Anthropic API (chat response)
-Streamlit UI ◄──── FastAPI ◄──── all of the above
+HTTP client  ◄──── FastAPI (POST /chat · GET /graph · POST /reset)
+Streamlit UI ◄──── FastAPI (subprocess launched by ui.py)
 ```
 
 ## Quickstart
@@ -50,10 +61,8 @@ pip install -r requirements.txt
 # Copy and fill in your Anthropic API key
 cp .env.example .env
 
-# Start the API server
-uvicorn memgraph.api.main:app --reload
-
-streamlit run ui.py   # (coming in M5)
+# Launch the full application (backend starts automatically)
+streamlit run ui.py
 ```
 
 ## Running tests
@@ -83,14 +92,16 @@ memgraph-personal-ai/
 │   │   ├── __init__.py
 │   │   └── main.py        # FastAPI app: lifespan, /chat, /graph, /reset
 │   └── ui/                # Streamlit UI + pyvis visualization
-│       └── __init__.py
+│       └── __init__.py    # ENTITY_COLORS + build_pyvis_html
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py        # global sentence_transformers stub + per-test module isolation fixture
 │   ├── test_import.py
 │   ├── test_kg.py         # M2 unit tests (extractor + SQLite round-trip)
 │   ├── test_retrieval.py  # M3 unit tests (BFS traversal + embedding fallback)
-│   └── test_api.py        # M4 unit tests (FastAPI endpoints)
+│   ├── test_api.py        # M4 unit tests (FastAPI endpoints)
+│   └── test_ui.py         # M5 unit tests (pyvis html helpers)
+├── ui.py                  # Streamlit entry point (launches backend subprocess)
 ├── requirements.txt
 ├── setup.py
 ├── LICENSE
@@ -105,4 +116,4 @@ memgraph-personal-ai/
 | M2 | knowledge graph core | Entity/relation extraction, SQLite persistence, NetworkX graph | done |
 | M3 | retrieval | BFS graph traversal and embedding cosine search | done |
 | M4 | FastAPI backend | `/chat`, `/graph`, `/reset` endpoints | done |
-| M5 | Streamlit UI | Chat panel + live pyvis knowledge-graph visualization | pending |
+| M5 | Streamlit UI | Chat panel + live pyvis knowledge-graph visualization | done |

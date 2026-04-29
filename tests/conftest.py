@@ -39,7 +39,14 @@ sys.modules.setdefault("sentence_transformers", _make_global_st_stub())
 
 
 def _clear_stale_api_refs() -> None:
-    """Remove memgraph.api (and its .main child) from the memgraph package object."""
+    """Remove memgraph.api (and its .main child) from the package object and sys.modules.
+
+    Python's __import__ only re-sets a subpackage attribute on its parent when the
+    module is NOT already in sys.modules. If we only delete the attribute but leave
+    the module in sys.modules, __import__("memgraph.api") returns immediately from
+    the cache without re-setting the attribute — leaving getattr() broken. Removing
+    from sys.modules forces a fresh import that properly wires up the attribute chain.
+    """
     if "memgraph" not in sys.modules:
         return
     memgraph_pkg = sys.modules["memgraph"]
@@ -53,6 +60,10 @@ def _clear_stale_api_refs() -> None:
             delattr(memgraph_pkg, "api")
         except AttributeError:
             pass
+    # Remove from sys.modules so the next __import__ triggers a full fresh load
+    # (and re-sets the attribute on the parent package).
+    sys.modules.pop("memgraph.api.main", None)
+    sys.modules.pop("memgraph.api", None)
 
 
 @pytest.fixture(autouse=True)
