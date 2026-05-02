@@ -1,5 +1,9 @@
 # MemGraph: Personal AI Assistant with Knowledge Graph Memory
 
+
+> **Video walkthrough:** https://youtu.be/XFJpXVW2jNU
+> **60-second overview:** https://youtu.be/__vqQlHGb6I
+
 > A local AI assistant that extracts a personal knowledge graph from your conversations and uses it for context-aware, personalized responses.
 
 <!-- TODO: replace with a 5-10 second demo gif. Record with ScreenToGif on
