@@ -1,119 +1,115 @@
 # MemGraph: Personal AI Assistant with Knowledge Graph Memory
 
-A local personal AI assistant that progressively builds a typed knowledge graph from your conversations. MemGraph extracts structured entities (people, places, preferences, facts, events) and relations between them from every message, persists them as a graph, and traverses that graph to gather relevant personal context before generating responses.
 
-## What works
+> **Video walkthrough:** https://youtu.be/XFJpXVW2jNU
+> **60-second overview:** https://youtu.be/__vqQlHGb6I
 
-### M1 — Scaffold (complete)
-- Package skeleton under the `memgraph` namespace with pinned dependencies.
-- Importable version string: `from memgraph import __version__`.
+> A local AI assistant that extracts a personal knowledge graph from your conversations and uses it for context-aware, personalized responses.
 
-### M2 — KG Core (complete)
-- **Triple model** (`memgraph.kg.Triple`): Pydantic model with `subject`, `predicate`, `object`, `confidence`, `subject_type`, and `object_type` fields.
-- **LLM extractor** (`extract_triples`): sends conversation text to `claude-haiku-4-5` via the Anthropic tool-use API; returns a validated `list[Triple]` and degrades gracefully to an empty list on any API or parse failure.
-- **SQLite persistence** (`init_db`, `upsert_triple`): `nodes` and `edges` tables created on first open; upserts are idempotent via `INSERT OR IGNORE`; node IDs are normalized to lowercase with underscores.
-- **Graph loader** (`load_graph`): reconstructs a `networkx.MultiDiGraph` from the stored tables, preserving predicate labels and confidence scores as edge attributes.
-- **Unit tests** (`tests/test_kg.py`): 13 tests covering extractor responses, API-failure degradation, SQLite schema creation, upsert idempotency, node-ID normalization, and graph round-trips. No live API key required — the Anthropic client is fully mocked.
+<!-- TODO: replace with a 5-10 second demo gif. Record with ScreenToGif on
+     Windows or peek on macOS. Save to docs/demo.gif and update path here. -->
+![demo](docs/demo.gif)
 
-### M3 — Retrieval Engine (complete)
-- **`Retriever` class** (`memgraph.retrieval.Retriever`): injectable constructor `(conn, G, model=None)` with four methods below. `SentenceTransformer` is lazily imported so injected mocks never trigger a model download.
-- **BFS retrieval** (`Retriever.bfs_retrieve`): lowercase-tokenises the query, drops single-char tokens, finds keyword-matching seed nodes by label substring, and BFS-traverses up to `depth` hops (default 2) via `nx.single_source_shortest_path_length`; collects only edges where both endpoints are in the visited set, capped at `max_nodes`.
-- **Embedding retrieval** (`Retriever.embedding_retrieve`): embeds the query with `all-MiniLM-L6-v2`, loads raw `float32` BLOBs from `node_embeddings`, computes L2-normalised cosine similarity, and returns top-k nodes' out-edges as a context string.
-- **Graph indexing** (`Retriever.index_graph`): embeds each un-indexed node using `"{label} ({type}): {pred} {neighbor}, ..."` and persists via `store.upsert_node_embedding`; no-op for already-indexed nodes.
-- **Unified interface** (`Retriever.retrieve`): tries BFS first; falls back to embedding similarity when BFS returns `""`.
-- **Persistent embedding table** (`node_embeddings`): new `(node_id TEXT PK, embedding BLOB NOT NULL)` table created by `init_db`; helpers `upsert_node_embedding` and `load_all_embeddings` in `memgraph.kg.store` and re-exported from `memgraph.kg`.
-- **Unit tests** (`tests/test_retrieval.py`): 22 tests covering BFS seed finding, depth-limiting, max-nodes capping, embedding round-trips, index idempotency, cosine fallback, and the unified interface. All sentence-transformer calls are mocked — no download required.
+## What it is
 
-### M4 — FastAPI Backend (complete)
-- **`POST /chat`**: extracts triples from the user message, upserts them to SQLite, reloads the graph and re-indexes embeddings (only when new triples arrive), retrieves context via `Retriever.retrieve`, calls Anthropic `claude-haiku-4-5` for a response, and maintains an in-memory conversation history buffer (capped at 20 entries). Response body: `{"response": str, "triples_extracted": int}`.
-- **`GET /graph`**: serializes the live NetworkX graph to `{"nodes": [...], "edges": [...]}` JSON for visualization.
-- **`POST /reset`**: truncates all three SQLite tables in FK-safe order (`node_embeddings → edges → nodes`), reinitializes an empty graph, and clears conversation history.
-- **Shared runtime state** lives in a module-level `_state` dict, wired up via FastAPI's `lifespan` context manager. `MEMGRAPH_DB_PATH` env var overrides the default `memgraph.db` path (used by tests with `:memory:`).
-- **Unit tests** (`tests/test_api.py`): 6 tests covering response shape, graph updates from extracted triples, empty-graph response, reset clearing graph/history, and history trimming. No API key or model download required — Anthropic client and SentenceTransformer are fully mocked.
-- Run the server: `uvicorn memgraph.api.main:app --reload`
+MemGraph is a local personal AI assistant that builds a structured knowledge graph from your conversations. Every message you send is parsed for entities — people, places, preferences, facts, events — and the typed relations between them. Those triples are persisted in SQLite and loaded into an in-memory NetworkX graph. When you ask a follow-up question, the assistant traverses the graph to pull relevant context before generating a response, so it remembers what you told it across the session.
 
-### M5 — Streamlit UI (complete)
-- **Single entry point**: `streamlit run ui.py` launches the FastAPI backend as a background subprocess (port 8000) then opens the Streamlit interface.
-- **Two-column layout**: chat panel on the left, live pyvis knowledge-graph visualization on the right.
-- **Chat panel**: persistent conversation history rendered with `st.chat_message`; `st.chat_input` anchored at the bottom; responses fetched from `POST /chat`.
-- **Graph panel**: fetches `GET /graph` after every interaction and re-renders a pyvis `Network` as an embedded HTML component. Nodes are color-coded by entity type (person=green, place=blue, preference=orange, fact=purple, event=red, entity/other=grey). Empty-graph state shows a friendly info message.
-- **Reset button**: calls `POST /reset`, clears local chat history, and rerenders.
-- **`memgraph.ui.build_pyvis_html(nodes, edges)`**: pure helper that converts `/graph` JSON lists to a self-contained dark-themed pyvis HTML string. Exported alongside `ENTITY_TYPE_COLORS`.
-- **Unit tests** (`tests/test_ui.py`): 4 tests covering empty graph, person-node color, edge predicate presence, and all known entity-type color keys — no Streamlit runtime or live server required.
-- **Note**: if port 8000 is already in use by another process, the UI connects to it as-is. The graph panel loads vis.js from CDN, so an internet connection is required for rendering.
-
-## Architecture
-
-```
-User message
-  └─► Anthropic API (triple extraction)  ──► NetworkX KG (SQLite-backed)
-User query
-  └─► Graph traversal + embedding cosine search
-        └─► context string → Anthropic API (chat response)
-HTTP client  ◄──── FastAPI (POST /chat · GET /graph · POST /reset)
-Streamlit UI ◄──── FastAPI (subprocess launched by ui.py)
-```
+Most production memory systems store raw message chunks and retrieve them by vector similarity. MemGraph uses a typed graph instead, which supports structured queries: answering "what food do I like in Berlin?" requires joining location and preference nodes, not just matching embeddings. Both approaches are implemented — keyword-anchored BFS graph traversal runs first, with embedding cosine similarity as a fallback for paraphrased or abstract queries.
 
 ## Quickstart
 
-```bash
-pip install -r requirements.txt
-# Copy and fill in your Anthropic API key
-cp .env.example .env
+**Requirements:** Python 3.10+, an Anthropic API key
 
-# Launch the full application (backend starts automatically)
+```bash
+git clone https://github.com/RitikPatill/memgraph-personal-ai.git
+cd memgraph-personal-ai
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env               # open .env and paste your key
 streamlit run ui.py
 ```
 
-## Running tests
+The browser opens automatically. The FastAPI backend starts as a subprocess on port 8000; no separate terminal is needed.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Required. |
+| `MEMGRAPH_DB_PATH` | `memgraph.db` | Override the SQLite file path. |
+| `MEMGRAPH_API_URL` | `http://localhost:8000` | Point the UI at a remote backend. |
+
+## Usage
+
+Type naturally in the chat panel on the left. After each message, the knowledge graph panel on the right re-renders — nodes are color-coded by entity type (person, place, preference, fact, event). The **Reset** button clears the graph and conversation history.
+
+To call the API directly:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "I live in Berlin and love Italian food."}'
+# {"response": "...", "triples_extracted": 2}
+```
+
+To run the backend without the Streamlit UI:
+
+```bash
+uvicorn memgraph.api.main:app --reload
+```
+
+To run the test suite (no API key required — all external calls are mocked):
 
 ```bash
 pytest tests/
 ```
 
-No API key is required — extractor tests use a fully mocked Anthropic client.
+## Architecture
 
-## Project Layout
+```
+User message
+  └─► POST /chat
+        ├─► claude-haiku-4-5  ──► typed triples (subject, predicate, object)
+        │                              └─► SQLite  (nodes · edges · node_embeddings)
+        │                                      └─► NetworkX MultiDiGraph (in-memory)
+        └─► Retriever
+              ├─► BFS  (keyword-anchored, depth=2)          primary
+              └─► Embedding cosine sim  (MiniLM-L6-v2)      fallback
+                       └─► context + history ──► claude-haiku-4-5 ──► reply
+
+Streamlit UI  ◄────────────────────  FastAPI  (/chat  /graph  /reset)
+```
+
+## Project structure
 
 ```
 memgraph-personal-ai/
 ├── memgraph/
-│   ├── __init__.py        # package root, version
-│   ├── kg/                # entity/relation extraction, SQLite, NetworkX
-│   │   ├── __init__.py
-│   │   ├── extractor.py   # Triple model + LLM-based triple extraction
-│   │   └── store.py       # SQLite schema, upsert, NetworkX graph loader
-│   ├── retrieval/         # BFS graph traversal + embedding cosine search
-│   │   ├── __init__.py
-│   │   ├── retriever.py   # Retriever class: bfs_retrieve, embedding_retrieve, index_graph, retrieve
-│   │   ├── traversal.py   # bfs_context: keyword-anchored BFS over NetworkX graph
-│   │   └── engine.py      # module-level wrappers: bfs_retrieve, embedding_retrieve, retrieve, compute_and_store_embeddings
-│   ├── api/               # FastAPI backend (/chat, /graph, /reset)
-│   │   ├── __init__.py
-│   │   └── main.py        # FastAPI app: lifespan, /chat, /graph, /reset
-│   └── ui/                # Streamlit UI + pyvis visualization
-│       └── __init__.py    # ENTITY_COLORS + build_pyvis_html
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py        # global sentence_transformers stub + per-test module isolation fixture
-│   ├── test_import.py
-│   ├── test_kg.py         # M2 unit tests (extractor + SQLite round-trip)
-│   ├── test_retrieval.py  # M3 unit tests (BFS traversal + embedding fallback)
-│   ├── test_api.py        # M4 unit tests (FastAPI endpoints)
-│   └── test_ui.py         # M5 unit tests (pyvis html helpers)
-├── ui.py                  # Streamlit entry point (launches backend subprocess)
+│   ├── kg/           # triple extraction, SQLite schema, NetworkX graph loader
+│   ├── retrieval/    # BFS traversal, embedding cosine search, unified Retriever
+│   ├── api/          # FastAPI app — /chat, /graph, /reset endpoints
+│   └── ui/           # pyvis HTML builder, entity-type color map
+├── tests/            # 45 unit tests; no API key or model download required
+├── ui.py             # Streamlit entry point — launches backend as subprocess
 ├── requirements.txt
 ├── setup.py
-├── LICENSE
-└── README.md
+└── .env.example
 ```
 
-## Milestones
+## Roadmap
 
-| # | Name | Description | Status |
-|---|------|-------------|--------|
-| M1 | scaffold + readme | Repo skeleton, package structure, dependencies | done |
-| M2 | knowledge graph core | Entity/relation extraction, SQLite persistence, NetworkX graph | done |
-| M3 | retrieval | BFS graph traversal and embedding cosine search | done |
-| M4 | FastAPI backend | `/chat`, `/graph`, `/reset` endpoints | done |
-| M5 | Streamlit UI | Chat panel + live pyvis knowledge-graph visualization | done |
+- [ ] Export and import the knowledge graph as JSON for backup and portability
+- [ ] Streaming responses via SSE to reduce perceived latency on long replies
+- [ ] Confidence-weighted graph pruning to discard or downgrade stale facts over time
+- [ ] CLI interface for headless usage without the browser UI
+- [ ] Multi-turn entity resolution — merge aliases ("Alex", "I", "me") into a single node
+
+## License
+
+MIT — see LICENSE.
+
+---
+
+Built autonomously by [autodev](https://github.com/RitikPatill/autodev),
+a multi-agent orchestrator I designed. Each commit in this repo was
+authored by me; the implementation work was performed by Sonnet under
+the orchestrator's control. Read the orchestrator's README to see how.
